@@ -7,7 +7,6 @@ import pprint
 
 npm_ls_output = []
 
-
 # Expects input from `yarn list --json --no-progress`
 
 for line in sys.stdin:
@@ -16,12 +15,15 @@ for line in sys.stdin:
 npm_ls_output = ''.join(npm_ls_output)
 json_data = json.loads(npm_ls_output)
 
-def clean_tree_list(trees):
+
+def clean_tree_list(trees, parent=None):
     key_whitelist = ['name', 'children']
     for tree in trees:
         for key in tree.keys():
             if key not in key_whitelist:
                 del tree[key]
+        if parent is not None:
+            tree['parent'] = parent
 
         name_parts = tree['name'].split('@')
         if len(name_parts) == 3:
@@ -33,17 +35,8 @@ def clean_tree_list(trees):
         tree['version'] = name_parts[len(name_parts) - 1]
 
         if 'children' in tree:
-            clean_tree_list(tree['children'])
+            clean_tree_list(tree['children'], tree)
 
-def save_hypothetical_paths(dependencies, hypothetical_root):
-    for entry in dependencies:
-        modules = os.path.join(hypothetical_root, 'node_modules')
-
-        entry['node_modules'] = modules
-        entry_hypothetical_root = os.path.join(modules, entry['name'])
-
-        if 'children' in entry:
-            save_hypothetical_paths(entry['children'], entry_hypothetical_root)
 
 def get_module_path(module, org, hypothetical_node_modules, stop_at):
     if hypothetical_node_modules == stop_at:
@@ -62,24 +55,58 @@ def get_module_path(module, org, hypothetical_node_modules, stop_at):
                         return os.path.join(org_dir, module)
     return get_module_path(module, org, os.path.dirname(hypothetical_node_modules), stop_at)
 
-def adjust_to_flattened_paths(dependencies, stop_at):
-    for entry in dependencies:
-        if 'node_modules' in entry:
-            try:
-                org = entry['org'] if 'org' in entry else None
-                entry['path'] = get_module_path(entry['name'], org, entry['node_modules'], stop_at)
-                del entry['node_modules']
-            except Exception:
-                print("Failed to find path for object:")
-                print(entry)
 
+def resolve_unflattened_module_path(tree, root):
+    if 'org' in tree:
+        package_path = 'node_modules/@{}/{}'.format(tree['org'], tree['name'])
+    else:
+        package_path = 'node_modules/{}'.format(tree['name'])
+
+    if 'parent' not in tree:
+        return os.path.join(root, package_path)
+
+    else:
+        parent_path = resolve_unflattened_module_path(tree['parent'], root)
+        return os.path.join(parent_path, package_path)
+
+def resolve_flattened_path(module, tree):
+    modules = os.path.dirname(tree['unflattened_node_modules'])
+    if os.path.isdir(modules):
+        for file in os.listdir(modules):
+            if file == module:
+                return os.path.join(modules, module)
+
+    if 'parent' in tree:
+        return resolve_flattened_path(module,  tree['parent'])
+
+
+def resolve_unflattened_module_paths(trees, root):
+    for tree in trees:
+        tree['path'] = resolve_unflattened_module_path(tree, root)
+
+        if 'children' in tree:
+            resolve_unflattened_module_paths(tree['children'], root)
+
+def resolve_flattened_paths(dependencies, stop_at):
+    for entry in dependencies:
+        if 'unflattened_node_modules' in entry:
+            entry['path'] = resolve_flattened_path(entry['name'], entry)
         if 'children' in entry:
-            adjust_to_flattened_paths(entry['children'], stop_at)
+            resolve_flattened_paths(entry['children'], stop_at)
+
+
+def remove_unflattened_node_modules(trees):
+    for tree in trees:
+        if 'unflattened_node_modules' in tree:
+            del tree['unflattened_node_modules']
+        if 'children' in tree:
+            remove_unflattened_node_modules(tree['children'])
 
 dependencies = json_data['data']['trees']
 clean_tree_list(dependencies)
-save_hypothetical_paths(dependencies, os.getcwd())
-adjust_to_flattened_paths(dependencies, os.getcwd())
+resolve_unflattened_module_paths(dependencies, os.getcwd())
+resolve_flattened_paths(dependencies, os.getcwd())
+remove_unflattened_node_modules(dependencies)
 
 pprint.pprint(dependencies)
 
