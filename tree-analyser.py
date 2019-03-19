@@ -38,6 +38,13 @@ def clean_tree_list(trees, parent=None):
             clean_tree_list(tree['children'], tree)
 
 
+def get_path_string(tree):
+    if 'parent' in tree:
+        return '{}--{}'.format(get_path_string(tree['parent']), tree['name'])
+    else:
+        return tree['name']
+
+
 def get_module_path(module, org, hypothetical_node_modules, stop_at):
     if hypothetical_node_modules == stop_at:
         raise Exception('Could not find package {}'.format(module))
@@ -69,6 +76,7 @@ def resolve_unflattened_module_path(tree, root):
         parent_path = resolve_unflattened_module_path(tree['parent'], root)
         return os.path.join(parent_path, package_path)
 
+
 def resolve_flattened_path(module, tree):
     modules = os.path.dirname(tree['unflattened_node_modules'])
     if os.path.isdir(modules):
@@ -82,17 +90,18 @@ def resolve_flattened_path(module, tree):
 
 def resolve_unflattened_module_paths(trees, root):
     for tree in trees:
-        tree['path'] = resolve_unflattened_module_path(tree, root)
+        tree['unflattened_node_modules'] = resolve_unflattened_module_path(tree, root)
 
         if 'children' in tree:
             resolve_unflattened_module_paths(tree['children'], root)
+
 
 def resolve_flattened_paths(dependencies, stop_at):
     for entry in dependencies:
         if 'unflattened_node_modules' in entry:
             entry['path'] = resolve_flattened_path(entry['name'], entry)
-        if 'children' in entry:
-            resolve_flattened_paths(entry['children'], stop_at)
+        if 'parent' in entry:
+            resolve_flattened_paths(entry['parent'], stop_at)
 
 
 def remove_unflattened_node_modules(trees):
@@ -102,10 +111,25 @@ def remove_unflattened_node_modules(trees):
         if 'children' in tree:
             remove_unflattened_node_modules(tree['children'])
 
+
+def verify_paths(trees):
+    for tree in trees:
+        try:
+            if 'path' in tree:
+                if tree['path'] is None:
+                    raise Exception('Path for {} was None ({})'.format(get_path_string(tree), tree['unflattened_node_modules']))
+                if not os.path.isdir(tree['path']):
+                    raise Exception('Couldn\'t find {} from {}'.format(get_path_string(tree), tree['unflattened_node_modules']))
+                if 'children' in tree:
+                    verify_paths(tree['children'])
+        except Exception as e:
+            print(e)
+
 dependencies = json_data['data']['trees']
 clean_tree_list(dependencies)
 resolve_unflattened_module_paths(dependencies, os.getcwd())
 resolve_flattened_paths(dependencies, os.getcwd())
+verify_paths(dependencies)
 remove_unflattened_node_modules(dependencies)
 
 pprint.pprint(dependencies)
