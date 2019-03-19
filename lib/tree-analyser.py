@@ -77,12 +77,19 @@ def resolve_unflattened_module_path(tree, root):
         return os.path.join(parent_path, package_path)
 
 
-def resolve_flattened_path(module, tree):
+def resolve_flattened_path(module, tree, org):
     modules = os.path.dirname(tree['unflattened_node_modules'])
     if os.path.isdir(modules):
         for file in os.listdir(modules):
             if file == module:
                 return os.path.join(modules, module)
+
+    if org is not None:
+        modules = os.path.join(os.path.dirname(tree['unflattened_node_modules']), '@{}'.format(org))
+        if os.path.isdir(modules):
+            for file in os.listdir(modules):
+                if file == module:
+                    return os.path.join(modules, module)
 
     if 'parent' in tree:
         return resolve_flattened_path(module,  tree['parent'])
@@ -99,7 +106,9 @@ def resolve_unflattened_module_paths(trees, root):
 def resolve_flattened_paths(dependencies, stop_at):
     for entry in dependencies:
         if 'unflattened_node_modules' in entry:
-            entry['path'] = resolve_flattened_path(entry['name'], entry)
+            if 'org' in entry:
+                org = entry['org']
+            entry['path'] = resolve_flattened_path(entry['name'], entry, org)
         if 'parent' in entry:
             resolve_flattened_paths(entry['parent'], stop_at)
 
@@ -125,12 +134,31 @@ def verify_paths(trees):
         except Exception as e:
             print(e)
 
+def get_package_size(path):
+    total = 0
+    for root, dirs, files in os.walk(path, topdown=True):
+        dirs[:] = [d for d in dirs if d not in 'node_modules']
+        for file in files:
+            file_path = os.path.join(root, file)
+            total += os.path.getsize(file_path)
+    return total
+
+def add_package_sizes(trees):
+    for tree in trees:
+        if 'path' in tree and tree['path'] is not None:
+            tree['size'] = get_package_size(tree['path'])
+        if 'children' in tree:
+            add_package_sizes(tree['children'])
+
 dependencies = json_data['data']['trees']
 clean_tree_list(dependencies)
 resolve_unflattened_module_paths(dependencies, os.getcwd())
 resolve_flattened_paths(dependencies, os.getcwd())
-verify_paths(dependencies)
-remove_unflattened_node_modules(dependencies)
+# remove_unflattened_node_modules(dependencies)
+# add_package_sizes(dependencies)
 
-pprint.pprint(dependencies)
+
+
+verify_paths(dependencies)
+# pprint.pprint(dependencies)
 
