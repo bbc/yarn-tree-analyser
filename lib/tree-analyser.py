@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 import os
 import sys
 import json
@@ -27,7 +26,7 @@ def clean_tree_list(trees, parent=None):
 
         name_parts = tree['name'].split('@')
         if len(name_parts) == 3:
-            more_name_parts = name_parts[1].split('/')
+
             tree['org'] = more_name_parts[0]
             tree['name'] = more_name_parts[1]
         else:
@@ -38,54 +37,44 @@ def clean_tree_list(trees, parent=None):
             clean_tree_list(tree['children'], tree)
 
 
-def get_path_string(tree):
+def get_qualified_name(tree):
+    parent = tree['parent']
+    name = tree['name']
     if 'parent' in tree:
-        return '{}--{}'.format(get_path_string(tree['parent']), tree['name'])
+        return '{}--{}'.format(get_qualified_name(parent, name))
     else:
         return tree['name']
 
 
-def get_module_path(module, org, hypothetical_node_modules, stop_at):
-    if hypothetical_node_modules == stop_at:
+def get_module_path(module, org, proposed_node_modules, stop_at):
+    if proposed_node_modules == stop_at:
         raise Exception('Could not find package {}'.format(module))
 
-    if os.path.basename(hypothetical_node_modules) == 'node_modules' and os.path.isdir(hypothetical_node_modules):
-        for entry in os.listdir(hypothetical_node_modules):
+    if os.path.basename(proposed_node_modules) == 'node_modules' \
+       and os.path.isdir(proposed_node_modules):
+        for entry in os.listdir(proposed_node_modules):
             if entry == module:
-                return os.path.join(hypothetical_node_modules, module)
+                return os.path.join(proposed_node_modules, module)
 
         if org is not None:
-            org_dir = os.path.join(hypothetical_node_modules, '@{}'.format(org))
+            org_dir = os.path.join(proposed_node_modules, '@{}'.format(org))
             if os.path.isdir(org_dir):
                 for entry in os.listdir(org_dir):
                     if entry == module:
                         return os.path.join(org_dir, module)
-    return get_module_path(module, org, os.path.dirname(hypothetical_node_modules), stop_at)
-
-
-def resolve_unflattened_module_path(tree, root):
-    if 'org' in tree:
-        package_path = 'node_modules/@{}/{}'.format(tree['org'], tree['name'])
-    else:
-        package_path = 'node_modules/{}'.format(tree['name'])
-
-    if 'parent' not in tree:
-        return os.path.join(root, package_path)
-
-    else:
-        parent_path = resolve_unflattened_module_path(tree['parent'], root)
-        return os.path.join(parent_path, package_path)
+    parent = os.path.dirname(proposed_node_modules)
+    return get_module_path(module, org, parent, stop_at)
 
 
 def resolve_flattened_path(module, tree, org):
-    modules = os.path.dirname(tree['unflattened_node_modules'])
+    modules = os.path.dirname(tree['guessed_modules'])
     if os.path.isdir(modules):
         for file in os.listdir(modules):
             if file == module:
                 return os.path.join(modules, module)
 
     if org is not None:
-        modules = os.path.join(os.path.dirname(tree['unflattened_node_modules']), '@{}'.format(org))
+        modules = os.path.join(modules, '@{}'.format(org))
         if os.path.isdir(modules):
             for file in os.listdir(modules):
                 if file == module:
@@ -95,17 +84,31 @@ def resolve_flattened_path(module, tree, org):
         return resolve_flattened_path(module,  tree['parent'])
 
 
-def resolve_unflattened_module_paths(trees, root):
+def guess_module_path(tree, root):
+    if 'org' in tree:
+        package_path = 'node_modules/@{}/{}'.format(tree['org'], tree['name'])
+    else:
+        package_path = 'node_modules/{}'.format(tree['name'])
+
+    if 'parent' not in tree:
+        return os.path.join(root, package_path)
+
+    else:
+        parent_path = guess_module_path(tree['parent'], root)
+        return os.path.join(parent_path, package_path)
+
+
+def guess_module_paths(trees, root):
     for tree in trees:
-        tree['unflattened_node_modules'] = resolve_unflattened_module_path(tree, root)
+        tree['guessed_modules'] = guess_module_path(tree, root)
 
         if 'children' in tree:
-            resolve_unflattened_module_paths(tree['children'], root)
+            guess_module_paths(tree['children'], root)
 
 
 def resolve_flattened_paths(dependencies, stop_at):
     for entry in dependencies:
-        if 'unflattened_node_modules' in entry:
+        if 'guessed_modules' in entry:
             if 'org' in entry:
                 org = entry['org']
             entry['path'] = resolve_flattened_path(entry['name'], entry, org)
@@ -113,26 +116,31 @@ def resolve_flattened_paths(dependencies, stop_at):
             resolve_flattened_paths(entry['parent'], stop_at)
 
 
-def remove_unflattened_node_modules(trees):
+def remove_guessed_modules(trees):
     for tree in trees:
-        if 'unflattened_node_modules' in tree:
-            del tree['unflattened_node_modules']
+        if 'guessed_modules' in tree:
+            del tree['guessed_modules']
         if 'children' in tree:
-            remove_unflattened_node_modules(tree['children'])
+            remove_guessed_modules(tree['children'])
 
 
 def verify_paths(trees):
     for tree in trees:
         try:
             if 'path' in tree:
+                qualified = get_qualified_name(tree)
+                guessed = tree['guessed_modules']
                 if tree['path'] is None:
-                    raise Exception('Path for {} was None ({})'.format(get_path_string(tree), tree['unflattened_node_modules']))
+                    message = 'Path for {} was None({})'
+                    raise Exception(message.format(qualified, guessed))
                 if not os.path.isdir(tree['path']):
-                    raise Exception('Couldn\'t find {} from {}'.format(get_path_string(tree), tree['unflattened_node_modules']))
+                    message = 'Coulndn\'t find {} from {}'
+                    raise Exception(message.format(qualified, guessed))
                 if 'children' in tree:
                     verify_paths(tree['children'])
         except Exception as e:
             print(e)
+
 
 def get_package_size(path):
     total = 0
@@ -143,6 +151,7 @@ def get_package_size(path):
             total += os.path.getsize(file_path)
     return total
 
+
 def add_package_sizes(trees):
     for tree in trees:
         if 'path' in tree and tree['path'] is not None:
@@ -150,15 +159,28 @@ def add_package_sizes(trees):
         if 'children' in tree:
             add_package_sizes(tree['children'])
 
+
 dependencies = json_data['data']['trees']
 clean_tree_list(dependencies)
-resolve_unflattened_module_paths(dependencies, os.getcwd())
+guess_module_paths(dependencies, os.getcwd())
 resolve_flattened_paths(dependencies, os.getcwd())
-# remove_unflattened_node_modules(dependencies)
-# add_package_sizes(dependencies)
+remove_guessed_modules(dependencies)
 
-
-
-verify_paths(dependencies)
+# verify_paths(dependencies)
 # pprint.pprint(dependencies)
 
+
+def list_duplicates(dependencies, dupes):
+    for tree in dependencies:
+        if tree['name'] in dupes:
+            dupes[tree['name']].add(tree['path'])
+        else:
+            dupes[tree['name']] = {tree['path']}
+    return dupes
+
+
+duplicates = list_duplicates(dependencies, {})
+sorted(duplicates.iteritems(), lambda x, y: len(x['name']) > len(y['name']))
+
+for key in duplicates.keys():
+    print('{}: \t{}'.format(key, len(duplicates[key])))
